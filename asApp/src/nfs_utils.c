@@ -6,6 +6,20 @@
 #include "save_restore_common.h"
 #include "nfs_utils.h"
 
+ #include <epicsVersion.h>
+
+#ifndef VERSION_INT
+#  define VERSION_INT(V,R,M,P) ( ((V)<<24) | ((R)<<16) | ((M)<<8) | (P))
+#endif
+#ifndef EPICS_VERSION_INT
+#  define EPICS_VERSION_INT VERSION_INT(EPICS_VERSION, EPICS_REVISION, EPICS_MODIFICATION, EPICS_PATCH_LEVEL)
+#endif
+
+
+#if EPICS_VERSION_INT < VERSION_INT(7,0,3,1)
+#define iocshSetError(INPUT) INPUT
+#endif
+
 char save_restoreNFSHostName[NFS_PATH_LEN] = "";
 char save_restoreNFSHostAddr[NFS_PATH_LEN] = "";
 char save_restoreNFSMntPoint[NFS_PATH_LEN] = "";
