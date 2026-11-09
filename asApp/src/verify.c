@@ -226,6 +226,7 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
             /* allocate storage for CA and for reading the file */
             storageBytes = dbr_size_n(field_type, element_count);
             if (is_long_string) {
+                /* CA may fill all elements without a NUL; reserve one extra byte for strcmp(). */
                 storageBytes = LONG_STRING_BUFF_SIZE + 1;
                 ca_long_string_length = element_count;
                 if (ca_long_string_length > LONG_STRING_BUFF_SIZE) ca_long_string_length = LONG_STRING_BUFF_SIZE;

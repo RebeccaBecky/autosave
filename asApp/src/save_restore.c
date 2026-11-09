@@ -87,7 +87,7 @@ struct chlist {                        /* save set list element */
     struct channel *plast_chan;        /* channel list tail */
     char reqFile[FN_LEN];              /* request file name */
     char *macrostring;                 /* copy of the macrostring with which list was created */
-    char long_string_buffer[LONG_STRING_BUFF_SIZE];
+    char long_string_buffer[LONG_STRING_BUFF_SIZE]; /* buffer for long string values */
     char saveFile[MAX_PATH_LEN + 1];   /* full save file name */
     char last_save_file[FN_LEN];       /* file name last used for save */
     char save_file[FN_LEN];            /* file name to use on next save */
@@ -1684,7 +1684,7 @@ STATIC int write_it(char *filename, struct chlist *plist)
                 long_string_length = LONG_STRING_BUFF_SIZE - 1;
             }
             if (long_string_length <= 0) {
-                printf("save_restore:write_it: invalid long-string size for '%s'\n", pchannel->name);
+                ERRLOG("write_it: invalid long-string size for '%s'\n", pchannel->name);
                 problem |= FPRINTF_FAILED;
                 goto trouble;
             }
@@ -1692,7 +1692,7 @@ STATIC int write_it(char *filename, struct chlist *plist)
             if (ca_array_get(DBR_CHAR, (unsigned long)long_string_length, pchannel->chid,
                              plist->long_string_buffer) != ECA_NORMAL ||
                 ca_pend_io(1.0) != ECA_NORMAL) {
-                printf("save_restore:write_it: failed to fetch long string '%s'\n", pchannel->name);
+                ERRLOG("write_it: failed to fetch long string '%s'\n", pchannel->name);
                 problem |= FPRINTF_FAILED;
                 goto trouble;
             }
@@ -3190,6 +3190,16 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
         }
     }
 
+    long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
+    if (long_string_value == NULL) {
+        ERRLOG("Can't allocate long-string restore buffer\n");
+        fclose(inp_fd);
+        if (handle) macDeleteHandle(handle);
+        if (pairs) free(pairs);
+        strNcpy(SR_recentlyStr, "Manual restore failed", STATUS_STR_LEN);
+        return ERROR;
+    }
+
     /* restore from data file */
     while ((bp = fgets(buffer, BUF_SIZE, inp_fd))) {
         if (handle && pairs) {
@@ -3238,13 +3248,14 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
                         if (fgets(buffer, BUF_SIZE, inp_fd) == NULL) {
                             if (ferror(inp_fd)) {
                                 ERRLOG("Error reading from file\n");
-                                free(long_string_value);
-                                return ERROR;
+                                num_errs++;
+                                break;
                             }
                             break;  /* EOF is fine, just stop reading */
                         }
                         bp = buffer;
                     }
+                    if (ferror(inp_fd)) break;
                     epicsStrnRawFromEscaped(value_string, BUF_SIZE, value_string, BUF_SIZE);
                     value_string[40] = '\0';
                     if (ca_search(realName, &chanid) != ECA_NORMAL) {
@@ -3261,14 +3272,6 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
                     if (save_restoreDebug >= 5) {
                         printf("save_restore:do_manual_restore: PV '%s' is long string; value='%s'.\n", PVname,
                                value_string);
-                    }
-                    if (long_string_value == NULL) {
-                        long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
-                        if (long_string_value == NULL) {
-                            ERRLOG("Can't allocate long-string restore buffer\n");
-                            num_errs++;
-                            break;
-                        }
                     }
                     long_string_length = strlen(value_string);
                     memcpy(long_string_value, value_string, long_string_length + 1);

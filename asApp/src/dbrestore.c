@@ -868,7 +868,17 @@ int reboot_restore(char *filename, initHookState init_state)
 
     /* restore from data file */
     num_errors = 0;
-    long_string_value = NULL;
+    long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
+    if (long_string_value == NULL) {
+        ERRLOG("Can't allocate long-string restore buffer\n");
+        fclose(inp_fd);
+        if (handle) macDeleteHandle(handle);
+        if (pairs) free(pairs);
+        dbFinishEntry(pdbentry);
+        if (pStatusVal) *pStatusVal = SR_STATUS_FAIL;
+        if (statusStr) strNcpy(statusStr, "Can't allocate restore buffer", STATUS_STR_LEN - 1);
+        return ERROR;
+    }
     while ((bp = fgets(buffer, BUF_SIZE, inp_fd))) {
         if (handle && pairs) {
             ebuffer[0] = '\0';
@@ -946,15 +956,9 @@ int reboot_restore(char *filename, initHookState init_state)
             if (realName[strlen(realName) - 1] == '$') {
                 realName[strlen(realName) - 1] = '\0';
                 is_long_string = 1;
-                long_string_length = 0;
-                long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
-                long_string_error = (long_string_value == NULL);
-                if (long_string_error) {
-                    ERRLOG("Can't allocate long-string restore buffer\n");
-                } else {
-                    long_string_length = strlen(value_string);
-                    memcpy(long_string_value, value_string, long_string_length + 1);
-                }
+                long_string_error = 0;
+                long_string_length = strlen(value_string);
+                memcpy(long_string_value, value_string, long_string_length + 1);
                 while (strchr(bp, '\n') == NULL && strchr(bp, '\r') == NULL) {
                     const char *chunk;
                     size_t chunk_length;
@@ -983,8 +987,6 @@ int reboot_restore(char *filename, initHookState init_state)
                 }
                 if (long_string_error) {
                     num_errors++;
-                    free(long_string_value);
-                    long_string_value = NULL;
                     if (ferror(inp_fd)) break;
                     ERRLOG("Long string for '%s' exceeds the supported size\n", PVname);
                     continue;
@@ -1034,6 +1036,7 @@ int reboot_restore(char *filename, initHookState init_state)
                 fclose(inp_fd);
                 if (handle) macDeleteHandle(handle);
                 if (pairs) free(pairs);
+                free(long_string_value);
                 dbFinishEntry(pdbentry);
                 if (pStatusVal) *pStatusVal = SR_STATUS_FAIL;
                 if (statusStr) strNcpy(statusStr, "restore aborted", STATUS_STR_LEN - 1);
@@ -1044,10 +1047,7 @@ int reboot_restore(char *filename, initHookState init_state)
             break;
         }
     }
-    if (is_long_string) {
-        free(long_string_value);
-        long_string_value = NULL;
-    }
+    free(long_string_value);
     fclose(inp_fd);
     if (handle) macDeleteHandle(handle);
     if (pairs) free(pairs);
