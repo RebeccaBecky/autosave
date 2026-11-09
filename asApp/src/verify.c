@@ -57,14 +57,19 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
     char *svalue, *svalue_read;
     chid chid;
     FILE *fr = NULL, *fr1 = NULL;
-    char c, s[BUF_SIZE], *bp, PVname[PV_NAME_LEN + 1], value_string[BUF_SIZE];
+    char c, s[BUF_SIZE], *bp, PVname[PV_NAME_LEN + 1], short_value_string[BUF_SIZE];
+    char *value_string, *long_string_value = NULL;
     char trial_restoreFileName[PATH_SIZE];
     char *CA_buffer = NULL, *read_buffer = NULL, *pc = NULL;
     short field_type, native_field_type;
     int i, j, n, is_scalar, is_scalar_in_file, is_long_string, is_string_waveform;
     int numPVs, numDifferences, numPVsNotConnected, nspace;
     int different, wrote_head = 0, status, file_ok = 0;
+    int long_string_error;
+    int long_string_decoded;
+    size_t long_string_length;
     long element_count = 0, storageBytes = 0, alloc_CA_buffer = 0;
+    long ca_long_string_length = 0;
 
     if (write_restore_file) {
         strcpy(trial_restoreFileName, restoreFileName);
@@ -129,11 +134,61 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
             if (write_restore_file) fprintf(fr, "%s", bp);
             continue;
         }
-        /* NOTE value_string must have room for nearly  BUF_SIZE characters */
-        n = sscanf(bp, "%80s%c%[^\n\r]", PVname, &c, value_string);
+        PVname[0] = '\0';
+        short_value_string[0] = '\0';
+        value_string = short_value_string;
+        long_string_decoded = 0;
+        n = sscanf(bp, "%80s%c%[^\n\r]", PVname, &c, short_value_string);
         if (debug > 3)
             printf("\nasVerify: PVname='%s', value_string[%d]='%s'\n", PVname, (int)strlen(value_string), value_string);
         if (n < 3) *value_string = 0;
+        is_long_string = strlen(PVname) > 0 && PVname[strlen(PVname) - 1] == '$';
+        if (is_long_string) {
+            if (long_string_value == NULL) {
+                long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
+                if (long_string_value == NULL) {
+                    printf("asVerify: Can't allocate long-string buffer.  I quit.\n");
+                    if (CA_buffer) free(CA_buffer);
+                    if (fr) fclose(fr);
+                    fclose(fp);
+                    return (-1);
+                }
+            }
+            long_string_length = strlen(short_value_string);
+            memcpy(long_string_value, short_value_string, long_string_length + 1);
+            long_string_error = 0;
+            while (strchr(bp, '\n') == NULL && strchr(bp, '\r') == NULL) {
+                size_t chunk_length;
+                if (fgets(s, BUF_SIZE, fp) == NULL) {
+                    if (ferror(fp)) long_string_error = 1;
+                    break;
+                }
+                bp = s;
+                chunk_length = strcspn(bp, "\r\n");
+                if (chunk_length >= LONG_STRING_FILE_BUFF_SIZE - long_string_length) {
+                    long_string_error = 1;
+                } else if (!long_string_error) {
+                    memcpy(long_string_value + long_string_length, bp, chunk_length);
+                    long_string_length += chunk_length;
+                    long_string_value[long_string_length] = '\0';
+                }
+            }
+            if (long_string_error) {
+                printf("asVerify: Long string for '%s' exceeds the supported size or could not be read.\n", PVname);
+                numDifferences++;
+                continue;
+            }
+            epicsStrnRawFromEscaped(long_string_value, LONG_STRING_FILE_BUFF_SIZE, long_string_value,
+                                    LONG_STRING_FILE_BUFF_SIZE);
+            long_string_decoded = 1;
+            if (strlen(long_string_value) >= LONG_STRING_BUFF_SIZE) {
+                printf("asVerify: Long string for '%s' exceeds %d characters.\n", PVname,
+                       LONG_STRING_BUFF_SIZE - 1);
+                numDifferences++;
+                continue;
+            }
+            value_string = long_string_value;
+        }
         if (strlen(PVname) >= PVNAME_STRINGSZ) {
             /* Impossible PV name */
             if (write_restore_file) fprintf(fr, "#? %s", bp);
@@ -153,7 +208,7 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
             native_field_type = ca_field_type(chid);
             field_type = native_field_type;
             if (debug > 3) printf("'%s' native field_type=%d\n", PVname, field_type);
-            is_long_string = (field_type == DBF_CHAR) && (PVname[strlen(PVname) - 1] == '$');
+            is_long_string = (field_type == DBF_CHAR) && is_long_string;
             /* If DBF_STRING will work, use it. */
             if (field_type != DBF_FLOAT && field_type != DBF_DOUBLE && field_type != DBF_ENUM) field_type = DBF_STRING;
             if (field_type == DBF_ENUM) field_type = DBF_SHORT;
@@ -170,7 +225,14 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
 
             /* allocate storage for CA and for reading the file */
             storageBytes = dbr_size_n(field_type, element_count);
-            if (is_long_string || is_string_waveform) storageBytes = dbr_size_n(DBF_CHAR, element_count);
+            if (is_long_string) {
+                /* CA may fill all elements without a NUL; reserve one extra byte for strcmp(). */
+                storageBytes = LONG_STRING_BUFF_SIZE + 1;
+                ca_long_string_length = element_count;
+                if (ca_long_string_length > LONG_STRING_BUFF_SIZE) ca_long_string_length = LONG_STRING_BUFF_SIZE;
+            } else if (is_string_waveform) {
+                storageBytes = dbr_size_n(DBF_CHAR, element_count);
+            }
             if (debug > 3)
                 printf("asVerify:type=%d,elements=%ld, storageBytes=%ld\n", field_type, element_count, storageBytes);
             if (alloc_CA_buffer < storageBytes) {
@@ -186,6 +248,7 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
                     fclose(fr);
                     fr = NULL;
                 }
+                free(long_string_value);
                 return (-1);
             }
             /* use second half of CA_buffer for values read from .sav file */
@@ -331,7 +394,7 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
                     break;
                 case DBF_STRING:
                     svalue = (char *)CA_buffer;
-                    if (is_long_string || is_string_waveform) {
+                    if (is_string_waveform) {
                         /* See if we got the whole line */
                         if (bp[strlen(bp) - 1] != '\n') {
                             /* No, we didn't.  One more read will certainly accumulate a value string of length BUF_SIZE */
@@ -346,21 +409,27 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
                         while (bp[strlen(bp) - 1] != '\n' && fgets(s, BUF_SIZE, fp) != NULL);
 
                         status = ca_array_get(DBR_CHAR, element_count, chid, (void *)svalue);
+                    } else if (is_long_string) {
+                        status = ca_array_get(DBR_CHAR, ca_long_string_length, chid, (void *)svalue);
                     } else {
                         status = ca_array_get(DBR_STRING, element_count, chid, (void *)svalue);
                     }
                     if (status & CA_M_SUCCESS) status = ca_pend_io(PEND_TIME);
                     if (!(status & CA_M_SUCCESS)) printf("Can't get value from '%s'.\n", PVname);
+                    if (is_long_string) svalue[ca_long_string_length] = '\0';
 
                     if ((is_scalar != is_scalar_in_file) && !is_long_string && !is_string_waveform) {
                         printf("*** %-25s is %s in file, but %s in ioc.\n", PVname,
                                is_scalar_in_file ? "scalar" : "array", is_scalar ? "scalar" : "array");
                     } else {
-                        if (is_long_string || is_string_waveform) {
+                        if (is_long_string) {
+                            different = strcmp(value_string, svalue);
+                        } else if (is_string_waveform) {
                             epicsStrnRawFromEscaped(value_string, BUF_SIZE, value_string, BUF_SIZE);
                             different = strncmp(value_string, svalue, BUF_SIZE);
                         } else if (is_scalar) {
-                            epicsStrnRawFromEscaped(value_string, BUF_SIZE, value_string, BUF_SIZE);
+                            if (!long_string_decoded)
+                                epicsStrnRawFromEscaped(value_string, BUF_SIZE, value_string, BUF_SIZE);
                             different = strcmp(value_string, svalue);
                         } else {
                             svalue_read = (char *)read_buffer;
@@ -390,7 +459,12 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
                         }
                     }
                     if (write_restore_file) {
-                        if (is_long_string || is_string_waveform) {
+                        if (is_long_string) {
+                            svalue[LONG_STRING_BUFF_SIZE] = '\0';
+                            fprintf(fr, "%s ", PVname);
+                            epicsStrPrintEscaped(fr, svalue, strlen(svalue));
+                            fprintf(fr, "\n");
+                        } else if (is_string_waveform) {
                             svalue[BUF_SIZE - 1] = '\0';
                             fprintf(fr, "%s ", PVname);
                             epicsStrPrintEscaped(fr, svalue, strlen(svalue));
@@ -441,6 +515,7 @@ int do_asVerify_fp(FILE *fp, int verbose, int debug, int write_restore_file, cha
         }
     }
     if (CA_buffer) free(CA_buffer);
+    free(long_string_value);
     fclose(fp);
 
     if (verbose >= 0)

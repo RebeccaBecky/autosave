@@ -1,134 +1,3 @@
-/* 12/12/96  tmm  v1.3 get doubles and doubles native (independent of
- *                the EPICS "precision" setting, as is BURT) and convert
- *                them using #define FLOAT_FMT, DOUBLE_FMT, below.
- * 01/03/97  tmm  v1.4 make backup save file if save succeeds
- * 06/03/97  tmm  v1.5 write doubles and doubles in g format. Fixed fdbrestore.
- * 04/26/99  tmm  v1.6 set first character of save file to '&' until we've
- *                written and flushed everything, then set it to '#'.
- * 05/11/99  tmm  v1.7 make sure backup save file is ok before writing new
- *                save file.
- * 11/23/99  tmm  v1.8 defend against condition in which ioc does not have
- *                write access to directory, but does have write access to
- *                existing autosave file.  In this case, we can't erase the
- *                file or change its length.
- * 01/05/01  tmm  v1.9 proper treatment of event_handler_args in function
- *                argument list.
- * 05/11/01  tmm  v2.0 defend against null trigger channel.
- * 12/20/01  tmm  v2.1 Test file open only if save_restore_test_fopen != 0
- * 02/22/02  tmm  v2.2 Work around for problems with USHORT fields
- * 02/26/02  tmm  v2.3 Adding features from Frank Lenkszus' version of the code:
- *                replaced logMsg with epicsPrintf  [that was a mistake!!]
- *                added set_savefile_path(char *path)
- *			      added set_requestfile_path(char *path)
- *			      added set_saveTask_priority(int priority)
- *			      added remove_data_set(char *filename)
- *                added reload_periodic_set(char * filename, double period)
- *                added reload_triggered_set(char *filename, char *trig_channel)
- *                added reload_monitor_set(char * filename, double period)
- *                added reload_manual_set(char * filename)
- *                check for errors on backup file creation
- *                check for errors on writing save file
- *                don't overwrite backup file if previous save failed
- *                added fdbrestoreX(char *filename) to restore from backup file
- *
- *                in set_XXX_path(), allow path with or without trailing '/'
- * 03/08/02  tmm  v2.4 Use William Lupton's macLib to simplify request files.
- *                Command-line arguments redefined from double to int. (Required
- *                for PPC.)
- * 03/13/02  tmm  v2.5 Allow for multiple directories in reqFilePath.
- * 03/15/02  tmm  v2.6 check saveRestoreFilePath before using it.
- * 04/22/03  tmm  v2.7 Add add_XXXfile_path(): like set_XXXfile_path(),
- *                but allows caller to pass path as two args to be concatenated.
- * 04/23/03  tmm  v2.8 Add macro-string argument to create_xxx_set(), added
- *                argument 'verbose' to save_restoreShow();
- * 04/28/03  tmm  v2.9 Drop add_XXXfile_path, and add second argument to
- *                set_XXXfile_path();
- * 05/20/03  tmm  v2.9a Looking for problems that cause save_restore() to hang
- * 07/14/03  tmm  v3.0 In addition to .sav and .savB, can save/restore <= 10
- *                sequenced files .sav0 -.sav9, which are written at preset
- *                intervals independent of the channel-list settings.  No longer
- *                test fopen() before save.  This caused more problems than it
- *                solved.
- * 07/21/03  tmm  v3.1 More checks during file writing.
- * 08/13/03  tmm  v3.2 Status PV's.  Merge bug fixes from 3.13 and 3.14 versions into
- *                something that will work under 3.13
- * 08/19/03  tmm  v3.3 Manage NFS mount.  Replace epicsPrintf with errlogPrintf.
- *                Replace logMsg with errlogPrintf except in callback routines.
- * 09/04/03  tmm  v3.4 Do manual restore operations (fdbrestore*) in the save_restore
- *                task.  With this change, all CA work is done by the save_restore task.
- * 04/12/04  tmm  v3.5 Added array support. fdbrestore* was reimplmented as a macro,
- *                but this meant that user could not invoke from command line.
- * 04/20/04  tmm  v4.0 3.13-compatible v3.5, with array support, converted to
- *                EPICS 3.14, though NFS stuff is #ifdef vxWorks
- *                In addition to .sav and .savB, can save/restore <= 10
- *                sequenced files .sav0 -.sav9, which are written at preset
- *                intervals independent of the channel-list settings.
- *                Status PV's have been reworked so database and medm file
- *                don't have to contain the names of save sets.
- * 04/23/04  tmm  List linking; was failing when readReqFile was called recursively.
- * 05/14/04  tmm  New status PV's.  The old ones had the save-set name as part of
- *                the record names.  Now, PV's are generic, and the save-set name
- *                is written to them.
- * 06/28/04  tmm  Check that chid is non-NULL before calling ca_state().
- * 10/04/04  tmm  Allow DOS line termination (CRLF) or unix (LF) in .sav file.
- * 10/29/04  tmm  v4.1 Init all strings to "".  Check that sr_mutex exists in
- *                save_restoreShow().
- * 11/03/04  tmm  v4.2 Changed the way time strings are processed.  Added some code
- *                to defend against partial init failures.
- * 11/30/04  tmm  v4.3 Arrays now maintain max and curr number of elements, and
- *                save_restore tracks changes in curr_elements.  Previously,
- *                if dbGet() set num_elements to zero for a PV, that was the last
- *                time save_restore looked at the PV.
- * 12/13/04  tmm  v4.4 Use epicsThreadGetStackSize(epicsThreadStackMedium)
- *                instead of hard-coded stack size.
- * 01/28/05  tmm  v4.5 Increased size of status-prefix to 29 bytes+NULL.  Added
- *                new status value: 'No Status'
- * 02/16/05  tmm  v4.6 Fixed faulty building of PV-name strings for status PV's
- *                Post selected save-set status strings promptly.
- * 06/27/05  tmm  v4.7 Request-file parsing fixed.  Previously, blank but not
- *                empty lines (e.g., containing a space character) seemed to
- *                contain the first word of the previous line, because name[]
- *                was not cleared before parsing a new line.
- * 02/02/06  tmm  v4.8 Don't quit trying to write file just because errno got set.
- *                Status PV's were being restricted to STRING_LEN chars, instead
- *                of PV_NAME_LEN chars.  (Thanks to Kay Kasemir for diagnosing and
- *                fixing these problems.)
- * 03/24/06  tmm  v4.9 Use epicsThreadGetStackSize(epicsThreadStackBig)
- * 03/28/06  tmm  Replaced all Debug macros with straight code
- *...
- * 09/07/06  tmm  v5.0 Don't hold sr_mutex; instead, use it to protect the
- *                variable listLock, which we can hold.  (vxWorks nversion-safe
- *                mutex was keeping save_restore task at high priority for
- *                much lomger than necessary.)
- * 12/06/06  tmm  v5.1 Don't even print the value of errno if fprintf() sets it.
- *                In tornado 2.2.1, fprintf() is setting errno every time, so
- *                the info is useless for diagnostic purposes.
- * 03/16/07  tmm  v5.2 create_xxx_set can now specify PV names from which file
- *                path and file name are to be read, by including SAVENAMEPV
- *                and/or SAVEPATHPV in the macro string supplied as an argument.
- *                Note this can be done only on the first call to create_xxx_set()
- *                for a save set, because only the first call results in a call to
- *                readReqFile(), in which the macro string is parsed.  If either
- *                macro is specified, save_restore will not maintain backup or
- *                files for the save set.
- * 03/19/07  tmm  v5.2 Don't print errno unless function returns an error.
- * 09/21/07  tmm  v5.3 New function, save_restoreSet_FilePermissions(),  allows control
- *                over permissions with which .sav files are created.
- * 11/19/07  tmm  v5.4 After failing to write a save file, retry after
- *                save_restoreRetrySeconds.  (New function, save_restoreSet_RetrySeconds().)
- *                Previously, we retried only after the file system was remounted, or waited
- *                until the next time the set was triggered.  Also, no longer retry fclose()
- *                100 times; now retry twice at most before giving up.
- *                Don't write sequence files (copy .sav to .sav<n>) for a list in failure.
- *                v5.3 failed to truncate the file when it open()'ed it (when compiled with
- *                SET_FILE_PERMISSIONS nonzero).  This caused the file to have extra characters
- *                if its useful length decreased and then increased, and restore thought the
- *                file was bad.
- * 03/10/08  tmm  v5.5 Merged in several improvements from Ben Franksen:
- *                Make use of status PV's optional and controllable by function call.
- *                Report failed connections to PV's at connect time.
- *                Allow embedded '.' in save-file name.
- */
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -154,7 +23,6 @@
 #include <epicsPrint.h>
 #include <epicsThread.h>
 #include <iocsh.h>
-/* not in 3.15.0.1 #include <tsDefs.h> */
 #include <macLib.h>
 #include <callback.h>
 #include <epicsMutex.h>
@@ -219,6 +87,7 @@ struct chlist {                        /* save set list element */
     struct channel *plast_chan;        /* channel list tail */
     char reqFile[FN_LEN];              /* request file name */
     char *macrostring;                 /* copy of the macrostring with which list was created */
+    char long_string_buffer[LONG_STRING_BUFF_SIZE]; /* buffer for long string values */
     char saveFile[MAX_PATH_LEN + 1];   /* full save file name */
     char last_save_file[FN_LEN];       /* file name last used for save */
     char save_file[FN_LEN];            /* file name to use on next save */
@@ -1333,18 +1202,12 @@ STATIC int connect_list(struct chlist *plist, int verbose)
             is_long_string = 1;
         }
 
-        /* For long-string PVs with max_elements == 1, allocate pArray for string storage */
-        if (is_long_string && pchannel->max_elements == 1 && pchannel->pArray == NULL) {
-            pchannel->pArray = calloc(BUF_SIZE, sizeof(char));
-            if (pchannel->pArray == NULL) {
-                printf("save_restore:connect_list: can't alloc long-string buffer for '%s'\n", pchannel->name);
-            }
-        }
-
         if (save_restoreDebug >= 10)
             printf("save_restore:connect_list: '%s' has, at most, %ld elements\n", pchannel->name,
                    pchannel->max_elements);
-        if (pchannel->max_elements > 1) {
+        if (is_long_string) {
+            pchannel->max_elements = pchannel->curr_elements = 1;
+        } else if (pchannel->max_elements > 1) {
             /* We use database access for arrays, so get that info.
              * Use realName (with '$' stripped) so dbNameToAddr succeeds. */
             status = SR_get_array_info(realName, &pchannel->max_elements, &field_size, &pchannel->field_type);
@@ -1357,11 +1220,6 @@ STATIC int connect_list(struct chlist *plist, int verbose)
                 if (save_restoreDebug >= 10)
                     printf("save_restore:connect_list:(after SR_get_array_info) '%s' has, at most, %ld elements\n",
                            pchannel->name, pchannel->max_elements);
-                /* Free any long-string buffer if we're now using the full array path */
-                if (is_long_string && pchannel->pArray) {
-                    free(pchannel->pArray);
-                    pchannel->pArray = NULL;
-                }
                 pchannel->pArray = calloc(pchannel->max_elements, field_size);
                 if (pchannel->pArray == NULL) {
                     printf("save_restore:connect_list: can't alloc array for '%s'\n", pchannel->name);
@@ -1501,6 +1359,7 @@ STATIC int get_channel_values(struct chlist *plist)
     long status, field_size;
     float *pf;
     double *pd;
+    int is_long_string;
 
     /* attempt to fetch all channels that are connected */
     for (pchannel = plist->pchan_list; pchannel != 0; pchannel = pchannel->pnext) {
@@ -1514,21 +1373,15 @@ STATIC int get_channel_values(struct chlist *plist)
 
             pchannel->max_elements = pchannel->curr_elements = ca_element_count(pchannel->chid);
 
-            /* For long-string PVs with max_elements == 1, allocate pArray */
             strNcpy(lsName, pchannel->name, PV_NAME_LEN);
             lsNameLen = strlen(lsName);
-            if (lsNameLen > 0 && lsName[lsNameLen - 1] == '$') {
+            is_long_string = lsNameLen > 0 && lsName[lsNameLen - 1] == '$';
+            if (is_long_string) {
                 lsName[lsNameLen - 1] = '\0';
-                if (pchannel->max_elements == 1 && pchannel->pArray == NULL) {
-                    pchannel->pArray = calloc(BUF_SIZE, sizeof(char));
-                    if (pchannel->pArray == NULL) {
-                        printf("save_restore:get_channel_values: can't alloc long-string buffer for '%s'\n",
-                               pchannel->name);
-                    }
-                }
+                pchannel->max_elements = pchannel->curr_elements = 1;
             }
 
-            if (pchannel->max_elements > 1) {
+            if (!is_long_string && pchannel->max_elements > 1) {
                 /* Strip '$' for dbNameToAddr */
                 status = SR_get_array_info(lsName, &pchannel->max_elements, &field_size, &pchannel->field_type);
                 if (status) {
@@ -1542,7 +1395,7 @@ STATIC int get_channel_values(struct chlist *plist)
                             "save_restore:get_channel_values:(after SR_get_array_info) '%s' has, at most, %ld "
                             "elements\n",
                             pchannel->name, pchannel->max_elements);
-                    /* Free any long-string buffer if we're now using the full array path */
+                    /* Discard stale array storage before resizing it. */
                     if (pchannel->pArray) {
                         free(pchannel->pArray);
                         pchannel->pArray = NULL;
@@ -1559,12 +1412,16 @@ STATIC int get_channel_values(struct chlist *plist)
 
         if (pchannel->chid && (ca_state(pchannel->chid) == cs_conn) && (pchannel->max_elements >= 1)) {
             field_type = ca_field_type(pchannel->chid);
+            {
+                size_t name_length = strlen(pchannel->name);
+                is_long_string = name_length > 0 && pchannel->name[name_length - 1] == '$';
+            }
             strNcpy(pchannel->value, INIT_STRING, STRING_LEN);
             if (field_type == DBF_FLOAT) {
                 ca_array_get(DBR_FLOAT, 1, pchannel->chid, (float *)pchannel->value);
             } else if (field_type == DBF_DOUBLE) {
                 ca_array_get(DBR_DOUBLE, 1, pchannel->chid, (double *)pchannel->value);
-            } else {
+            } else if (!is_long_string) {
                 ca_array_get(DBR_STRING, 1, pchannel->chid, pchannel->value);
             }
             if (field_type == DBF_ENUM) {
@@ -1576,16 +1433,6 @@ STATIC int get_channel_values(struct chlist *plist)
             if (pchannel->max_elements > 1) {
                 pchannel->curr_elements = pchannel->max_elements;
                 (void)SR_get_array(pchannel->name, pchannel->pArray, &pchannel->curr_elements);
-            }
-            /* For long-string PVs (name ends with '$') with max_elements == 1,
-             * fetch the long-string value via CA into pArray */
-            if (pchannel->max_elements == 1 && pchannel->pArray != NULL) {
-                int lsLen = strlen(pchannel->name);
-                if (lsLen > 0 && pchannel->name[lsLen - 1] == '$') {
-                    long nchar = ca_element_count(pchannel->chid);
-                    if (nchar > BUF_SIZE) nchar = BUF_SIZE;
-                    ca_array_get(DBR_CHAR, nchar, pchannel->chid, pchannel->pArray);
-                }
             }
             if (save_restoreDebug >= 15) {
                 printf("save_restore:get_channel_values: '%s' currently has %ld elements\n", pchannel->name,
@@ -1624,7 +1471,9 @@ STATIC int get_channel_values(struct chlist *plist)
                 epicsSnprintf(pchannel->value, 63, DOUBLE_FMT, *pd);
             }
             /* then we at least had a CA connection.  Did it produce? */
-            pchannel->valid = strcmp(pchannel->value, INIT_STRING);
+            if (pchannel->name[strlen(pchannel->name) - 1] != '$') {
+                pchannel->valid = strcmp(pchannel->value, INIT_STRING);
+            }
         } else {
             if (save_restoreDebug > 1) printf("save_restore:get_channel_values: invalid channel %s\n", pchannel->name);
         }
@@ -1760,6 +1609,7 @@ STATIC int write_it(char *filename, struct chlist *plist)
     struct stat fileStat;       /* qiao: file state */
     char realName[PV_NAME_LEN]; /* name without trailing '$' */
     int is_long_string;
+    long long_string_length;
     char value_string[BUF_SIZE];
 
     fGetDateStr(datetime);
@@ -1828,6 +1678,26 @@ STATIC int write_it(char *filename, struct chlist *plist)
             realName[strlen(realName) - 1] = '\0';
             is_long_string = 1;
         }
+        if (pchannel->valid && is_long_string) {
+            long_string_length = ca_element_count(pchannel->chid);
+            if (long_string_length > LONG_STRING_BUFF_SIZE - 1) {
+                long_string_length = LONG_STRING_BUFF_SIZE - 1;
+            }
+            if (long_string_length <= 0) {
+                ERRLOG("write_it: invalid long-string size for '%s'\n", pchannel->name);
+                problem |= FPRINTF_FAILED;
+                goto trouble;
+            }
+            memset(plist->long_string_buffer, 0, LONG_STRING_BUFF_SIZE);
+            if (ca_array_get(DBR_CHAR, (unsigned long)long_string_length, pchannel->chid,
+                             plist->long_string_buffer) != ECA_NORMAL ||
+                ca_pend_io(1.0) != ECA_NORMAL) {
+                ERRLOG("write_it: failed to fetch long string '%s'\n", pchannel->name);
+                problem |= FPRINTF_FAILED;
+                goto trouble;
+            }
+            plist->long_string_buffer[long_string_length] = '\0';
+        }
         if (pchannel->valid) {
             n = fprintf(out_fd, "%s ", pchannel->name);
         } else {
@@ -1842,11 +1712,12 @@ STATIC int write_it(char *filename, struct chlist *plist)
 
         errno = 0;
         if (is_long_string) {
-            /* write first BUF-SIZE-1 characters of long string, so dbrestore doesn't choke. */
-            strNcpy(value_string, pchannel->pArray, BUF_SIZE);
-            value_string[BUF_SIZE - 1] = '\0';
-            n = epicsStrPrintEscaped(out_fd, value_string, strlen(value_string));
-            if (n > 0 || !strlen(value_string)) { n = fprintf(out_fd, "\n"); }
+            if (pchannel->valid) {
+                n = epicsStrPrintEscaped(out_fd, plist->long_string_buffer, strlen(plist->long_string_buffer));
+                if (n > 0 || !strlen(plist->long_string_buffer)) { n = fprintf(out_fd, "\n"); }
+            } else {
+                n = fprintf(out_fd, "\n");
+            }
         } else if (pchannel->field_type == DBF_CHAR && pchannel->max_elements > 1) {
             /* DBF_CHAR waveform used as a string -- write string content from array data */
             strNcpy(value_string, pchannel->pArray, BUF_SIZE);
@@ -3203,12 +3074,15 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
     char buffer[BUF_SIZE], *bp, c;
     char ebuffer[EBUF_SIZE];
     char value_string[BUF_SIZE];
+    char *long_string_value = NULL;
     int n;
     long status, num_errs = 0;
     FILE *inp_fd;
     chid chanid = 0;
     char realName[PV_NAME_LEN]; /* name without trailing '$' */
     int is_long_string;
+    int long_string_error;
+    size_t long_string_length;
     MAC_HANDLE *handle = NULL;
     char **pairs = NULL;
 
@@ -3224,6 +3098,15 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
                 found = 1;
             } else {
                 plist = plist->pnext;
+            }
+        }
+        if (found) {
+            for (pchannel = plist->pchan_list; pchannel != NULL; pchannel = pchannel->pnext) {
+                size_t name_length = strlen(pchannel->name);
+                if (name_length > 0 && pchannel->name[name_length - 1] == '$') {
+                    found = 0;
+                    break;
+                }
             }
         }
         if (found) {
@@ -3307,6 +3190,16 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
         }
     }
 
+    long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
+    if (long_string_value == NULL) {
+        ERRLOG("Can't allocate long-string restore buffer\n");
+        fclose(inp_fd);
+        if (handle) macDeleteHandle(handle);
+        if (pairs) free(pairs);
+        strNcpy(SR_recentlyStr, "Manual restore failed", STATUS_STR_LEN);
+        return ERROR;
+    }
+
     /* restore from data file */
     while ((bp = fgets(buffer, BUF_SIZE, inp_fd))) {
         if (handle && pairs) {
@@ -3319,6 +3212,8 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
         /* (value may be a string with leading whitespace; it may be */
         /* entirely whitespace; the number of spaces may be crucial; */
         /* it might also consist of zero characters) */
+        PVname[0] = '\0';
+        value_string[0] = '\0';
         n = sscanf(bp, "%s%c%[^\n]", PVname, &c, value_string);
         if (n < 3) *value_string = 0;
         if (strncmp(PVname, "<END>", 5) == 0) { break; }
@@ -3353,12 +3248,14 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
                         if (fgets(buffer, BUF_SIZE, inp_fd) == NULL) {
                             if (ferror(inp_fd)) {
                                 ERRLOG("Error reading from file\n");
-                                return ERROR;
+                                num_errs++;
+                                break;
                             }
                             break;  /* EOF is fine, just stop reading */
                         }
                         bp = buffer;
                     }
+                    if (ferror(inp_fd)) break;
                     epicsStrnRawFromEscaped(value_string, BUF_SIZE, value_string, BUF_SIZE);
                     value_string[40] = '\0';
                     if (ca_search(realName, &chanid) != ECA_NORMAL) {
@@ -3376,27 +3273,58 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
                         printf("save_restore:do_manual_restore: PV '%s' is long string; value='%s'.\n", PVname,
                                value_string);
                     }
-                    /* See if we got the whole line */
-                    if (bp[strlen(bp) - 1] != '\n') {
-                        /* No, we didn't.  One more read will certainly accumulate a value string of length BUF_SIZE */
-                        bp = fgets(buffer, BUF_SIZE, inp_fd);
-                        n = BUF_SIZE - (int)strlen(value_string) - 1;
-                        strncat(value_string, bp, n);
-                        if (value_string[strlen(value_string) - 1] == '\n')
-                            value_string[strlen(value_string) - 1] = '\0';
+                    long_string_length = strlen(value_string);
+                    memcpy(long_string_value, value_string, long_string_length + 1);
+                    long_string_error = 0;
+                    while (strchr(bp, '\n') == NULL && strchr(bp, '\r') == NULL) {
+                        const char *chunk;
+                        size_t chunk_length;
+                        if (fgets(buffer, BUF_SIZE, inp_fd) == NULL) {
+                            if (ferror(inp_fd)) {
+                                ERRLOG("Error reading from file\n");
+                                long_string_error = 1;
+                            }
+                            break;
+                        }
+                        bp = buffer;
+                        if (handle && pairs) {
+                            ebuffer[0] = '\0';
+                            macExpandString(handle, buffer, ebuffer, EBUF_SIZE);
+                            bp = ebuffer;
+                        }
+                        chunk = bp;
+                        chunk_length = strcspn(chunk, "\r\n");
+                        if (chunk_length >= LONG_STRING_FILE_BUFF_SIZE - long_string_length) {
+                            long_string_error = 1;
+                        } else if (!long_string_error) {
+                            memcpy(long_string_value + long_string_length, chunk, chunk_length);
+                            long_string_length += chunk_length;
+                            long_string_value[long_string_length] = '\0';
+                        }
                     }
-                    /* Discard additional characters until end of line */
-                    while (bp[strlen(bp) - 1] != '\n') bp = fgets(buffer, BUF_SIZE, inp_fd);
-                    epicsStrnRawFromEscaped(value_string, BUF_SIZE, value_string, BUF_SIZE);
+                    if (long_string_error) {
+                        num_errs++;
+                        if (ferror(inp_fd)) break;
+                        ERRLOG("Long string for '%s' exceeds the supported size\n", PVname);
+                        continue;
+                    }
+                    epicsStrnRawFromEscaped(long_string_value, LONG_STRING_FILE_BUFF_SIZE, long_string_value,
+                                            LONG_STRING_FILE_BUFF_SIZE);
+                    if (strlen(long_string_value) >= LONG_STRING_BUFF_SIZE) {
+                        ERRLOG("Long string for '%s' exceeds %d characters\n", PVname, LONG_STRING_BUFF_SIZE - 1);
+                        num_errs++;
+                        continue;
+                    }
                     if (ca_search(PVname, &chanid) != ECA_NORMAL) {
                         printf("save_restore:do_manual_restore: ca_search for %s failed\n", PVname);
                         num_errs++;
                     } else if (ca_pend_io(0.5) != ECA_NORMAL) {
                         num_errs++;
-                        /* Don't forget trailing null character: "strlen(value_string)+1" below */
-                    } else if (ca_array_put(DBR_CHAR, (unsigned long)strlen(value_string) + 1, chanid, value_string) != ECA_NORMAL) {
-                        printf("save_restore:do_manual_restore: ca_array_put of '%s' to '%s' failed\n", value_string,
-                               PVname);
+                        /* The long-string put includes its trailing null character. */
+                    } else if (ca_array_put(DBR_CHAR, (unsigned long)strlen(long_string_value) + 1, chanid,
+                                            long_string_value) != ECA_NORMAL) {
+                        printf("save_restore:do_manual_restore: ca_array_put of '%s' to '%s' failed\n",
+                               long_string_value, PVname);
                         num_errs++;
                     }
                 }
@@ -3432,6 +3360,7 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
                 fclose(inp_fd);
                 if (handle) macDeleteHandle(handle);
                 if (pairs) free(pairs);
+                free(long_string_value);
                 strNcpy(SR_recentlyStr, "Manual restore failed", STATUS_STR_LEN);
                 if (p_data) {
                     free(p_data);
@@ -3452,6 +3381,7 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
     fclose(inp_fd);
     if (handle) macDeleteHandle(handle);
     if (pairs) free(pairs);
+    free(long_string_value);
 
     if (file_type == FROM_SAVE_FILE) {
         /* make  backup */
@@ -3462,7 +3392,11 @@ STATIC int do_manual_restore(char *filename, int file_type, char *macrostring)
             printf("save_restore:do_manual_restore: myFileCopy() failed for '%s' -> '%s'\n", restoreFile, bu_filename);
         }
     }
-    strNcpy(SR_recentlyStr, "Manual restore succeeded", STATUS_STR_LEN);
+    if (num_errs == 0) {
+        strNcpy(SR_recentlyStr, "Manual restore succeeded", STATUS_STR_LEN);
+    } else {
+        epicsSnprintf(SR_recentlyStr, STATUS_STR_LEN - 1, "%ld errors during manual restore", num_errs);
+    }
 
     if (p_data) {
         free(p_data);

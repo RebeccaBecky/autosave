@@ -44,8 +44,12 @@
 #define FLOAT_FMT "%.7g"
 #define DOUBLE_FMT "%.14g"
 
-#define BUF_SIZE 32767
+#define BUF_SIZE 200
 #define EBUF_SIZE (BUF_SIZE * 2)
+#define LONG_STRING_BUFF_SIZE (32767 + 1) /* Maximum EPICS lsi/lso value length plus terminating NUL. */
+/* Hex-escaped bytes can expand to up to four characters in the save file,
+therefore need 4 times the buffer size for worst case */
+#define LONG_STRING_FILE_BUFF_SIZE (LONG_STRING_BUFF_SIZE * 4)
 #define ARRAY_BEGIN '{'
 #define ARRAY_END '}'
 #define ELEMENT_BEGIN '\"'
