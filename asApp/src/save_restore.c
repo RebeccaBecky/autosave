@@ -1,3 +1,134 @@
+/* 12/12/96  tmm  v1.3 get doubles and doubles native (independent of
+ *                the EPICS "precision" setting, as is BURT) and convert
+ *                them using #define FLOAT_FMT, DOUBLE_FMT, below.
+ * 01/03/97  tmm  v1.4 make backup save file if save succeeds
+ * 06/03/97  tmm  v1.5 write doubles and doubles in g format. Fixed fdbrestore.
+ * 04/26/99  tmm  v1.6 set first character of save file to '&' until we've
+ *                written and flushed everything, then set it to '#'.
+ * 05/11/99  tmm  v1.7 make sure backup save file is ok before writing new
+ *                save file.
+ * 11/23/99  tmm  v1.8 defend against condition in which ioc does not have
+ *                write access to directory, but does have write access to
+ *                existing autosave file.  In this case, we can't erase the
+ *                file or change its length.
+ * 01/05/01  tmm  v1.9 proper treatment of event_handler_args in function
+ *                argument list.
+ * 05/11/01  tmm  v2.0 defend against null trigger channel.
+ * 12/20/01  tmm  v2.1 Test file open only if save_restore_test_fopen != 0
+ * 02/22/02  tmm  v2.2 Work around for problems with USHORT fields
+ * 02/26/02  tmm  v2.3 Adding features from Frank Lenkszus' version of the code:
+ *                replaced logMsg with epicsPrintf  [that was a mistake!!]
+ *                added set_savefile_path(char *path)
+ *			      added set_requestfile_path(char *path)
+ *			      added set_saveTask_priority(int priority)
+ *			      added remove_data_set(char *filename)
+ *                added reload_periodic_set(char * filename, double period)
+ *                added reload_triggered_set(char *filename, char *trig_channel)
+ *                added reload_monitor_set(char * filename, double period)
+ *                added reload_manual_set(char * filename)
+ *                check for errors on backup file creation
+ *                check for errors on writing save file
+ *                don't overwrite backup file if previous save failed
+ *                added fdbrestoreX(char *filename) to restore from backup file
+ *
+ *                in set_XXX_path(), allow path with or without trailing '/'
+ * 03/08/02  tmm  v2.4 Use William Lupton's macLib to simplify request files.
+ *                Command-line arguments redefined from double to int. (Required
+ *                for PPC.)
+ * 03/13/02  tmm  v2.5 Allow for multiple directories in reqFilePath.
+ * 03/15/02  tmm  v2.6 check saveRestoreFilePath before using it.
+ * 04/22/03  tmm  v2.7 Add add_XXXfile_path(): like set_XXXfile_path(),
+ *                but allows caller to pass path as two args to be concatenated.
+ * 04/23/03  tmm  v2.8 Add macro-string argument to create_xxx_set(), added
+ *                argument 'verbose' to save_restoreShow();
+ * 04/28/03  tmm  v2.9 Drop add_XXXfile_path, and add second argument to
+ *                set_XXXfile_path();
+ * 05/20/03  tmm  v2.9a Looking for problems that cause save_restore() to hang
+ * 07/14/03  tmm  v3.0 In addition to .sav and .savB, can save/restore <= 10
+ *                sequenced files .sav0 -.sav9, which are written at preset
+ *                intervals independent of the channel-list settings.  No longer
+ *                test fopen() before save.  This caused more problems than it
+ *                solved.
+ * 07/21/03  tmm  v3.1 More checks during file writing.
+ * 08/13/03  tmm  v3.2 Status PV's.  Merge bug fixes from 3.13 and 3.14 versions into
+ *                something that will work under 3.13
+ * 08/19/03  tmm  v3.3 Manage NFS mount.  Replace epicsPrintf with errlogPrintf.
+ *                Replace logMsg with errlogPrintf except in callback routines.
+ * 09/04/03  tmm  v3.4 Do manual restore operations (fdbrestore*) in the save_restore
+ *                task.  With this change, all CA work is done by the save_restore task.
+ * 04/12/04  tmm  v3.5 Added array support. fdbrestore* was reimplmented as a macro,
+ *                but this meant that user could not invoke from command line.
+ * 04/20/04  tmm  v4.0 3.13-compatible v3.5, with array support, converted to
+ *                EPICS 3.14, though NFS stuff is #ifdef vxWorks
+ *                In addition to .sav and .savB, can save/restore <= 10
+ *                sequenced files .sav0 -.sav9, which are written at preset
+ *                intervals independent of the channel-list settings.
+ *                Status PV's have been reworked so database and medm file
+ *                don't have to contain the names of save sets.
+ * 04/23/04  tmm  List linking; was failing when readReqFile was called recursively.
+ * 05/14/04  tmm  New status PV's.  The old ones had the save-set name as part of
+ *                the record names.  Now, PV's are generic, and the save-set name
+ *                is written to them.
+ * 06/28/04  tmm  Check that chid is non-NULL before calling ca_state().
+ * 10/04/04  tmm  Allow DOS line termination (CRLF) or unix (LF) in .sav file.
+ * 10/29/04  tmm  v4.1 Init all strings to "".  Check that sr_mutex exists in
+ *                save_restoreShow().
+ * 11/03/04  tmm  v4.2 Changed the way time strings are processed.  Added some code
+ *                to defend against partial init failures.
+ * 11/30/04  tmm  v4.3 Arrays now maintain max and curr number of elements, and
+ *                save_restore tracks changes in curr_elements.  Previously,
+ *                if dbGet() set num_elements to zero for a PV, that was the last
+ *                time save_restore looked at the PV.
+ * 12/13/04  tmm  v4.4 Use epicsThreadGetStackSize(epicsThreadStackMedium)
+ *                instead of hard-coded stack size.
+ * 01/28/05  tmm  v4.5 Increased size of status-prefix to 29 bytes+NULL.  Added
+ *                new status value: 'No Status'
+ * 02/16/05  tmm  v4.6 Fixed faulty building of PV-name strings for status PV's
+ *                Post selected save-set status strings promptly.
+ * 06/27/05  tmm  v4.7 Request-file parsing fixed.  Previously, blank but not
+ *                empty lines (e.g., containing a space character) seemed to
+ *                contain the first word of the previous line, because name[]
+ *                was not cleared before parsing a new line.
+ * 02/02/06  tmm  v4.8 Don't quit trying to write file just because errno got set.
+ *                Status PV's were being restricted to STRING_LEN chars, instead
+ *                of PV_NAME_LEN chars.  (Thanks to Kay Kasemir for diagnosing and
+ *                fixing these problems.)
+ * 03/24/06  tmm  v4.9 Use epicsThreadGetStackSize(epicsThreadStackBig)
+ * 03/28/06  tmm  Replaced all Debug macros with straight code
+ *...
+ * 09/07/06  tmm  v5.0 Don't hold sr_mutex; instead, use it to protect the
+ *                variable listLock, which we can hold.  (vxWorks nversion-safe
+ *                mutex was keeping save_restore task at high priority for
+ *                much lomger than necessary.)
+ * 12/06/06  tmm  v5.1 Don't even print the value of errno if fprintf() sets it.
+ *                In tornado 2.2.1, fprintf() is setting errno every time, so
+ *                the info is useless for diagnostic purposes.
+ * 03/16/07  tmm  v5.2 create_xxx_set can now specify PV names from which file
+ *                path and file name are to be read, by including SAVENAMEPV
+ *                and/or SAVEPATHPV in the macro string supplied as an argument.
+ *                Note this can be done only on the first call to create_xxx_set()
+ *                for a save set, because only the first call results in a call to
+ *                readReqFile(), in which the macro string is parsed.  If either
+ *                macro is specified, save_restore will not maintain backup or
+ *                files for the save set.
+ * 03/19/07  tmm  v5.2 Don't print errno unless function returns an error.
+ * 09/21/07  tmm  v5.3 New function, save_restoreSet_FilePermissions(),  allows control
+ *                over permissions with which .sav files are created.
+ * 11/19/07  tmm  v5.4 After failing to write a save file, retry after
+ *                save_restoreRetrySeconds.  (New function, save_restoreSet_RetrySeconds().)
+ *                Previously, we retried only after the file system was remounted, or waited
+ *                until the next time the set was triggered.  Also, no longer retry fclose()
+ *                100 times; now retry twice at most before giving up.
+ *                Don't write sequence files (copy .sav to .sav<n>) for a list in failure.
+ *                v5.3 failed to truncate the file when it open()'ed it (when compiled with
+ *                SET_FILE_PERMISSIONS nonzero).  This caused the file to have extra characters
+ *                if its useful length decreased and then increased, and restore thought the
+ *                file was bad.
+ * 03/10/08  tmm  v5.5 Merged in several improvements from Ben Franksen:
+ *                Make use of status PV's optional and controllable by function call.
+ *                Report failed connections to PV's at connect time.
+ *                Allow embedded '.' in save-file name.
+ */
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -23,6 +154,7 @@
 #include <epicsPrint.h>
 #include <epicsThread.h>
 #include <iocsh.h>
+/* not in 3.15.0.1 #include <tsDefs.h> */
 #include <macLib.h>
 #include <callback.h>
 #include <epicsMutex.h>
