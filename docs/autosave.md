@@ -283,6 +283,9 @@ PV values in save files are converted to strings. Special handling applies to:
 - **menu and enum**: Saved as integers
 - **arrays**: Read using database access
 
+Long-string PVs requested with a trailing `$` (for example, `xxx:myCalc.CALC$`)
+are saved and restored up to 32767 characters.
+
 Sample save file:
 ```
 # save/restore V4.9	Automatically generated - DO NOT MODIFY - 060720-154526

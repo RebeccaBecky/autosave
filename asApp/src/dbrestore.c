@@ -233,6 +233,10 @@ STATIC long scalar_restore(int pass, DBENTRY *pdbentry, char *PVname, char *valu
     /* We do know the length of the buffer for sure, because this depends on the
        calling code, so we limit to the actual string size. */
     epicsStrnRawFromEscaped(value_string, value_string_len, value_string, value_string_len);
+    if (is_long_string && strlen(value_string) >= LONG_STRING_BUFF_SIZE) {
+        ERRLOG("Long string for '%s' exceeds %d characters\n", PVname, LONG_STRING_BUFF_SIZE - 1);
+        return -1;
+    }
 
     if (save_restoreDebug >= 5)
         ERRLOG("entry:field type '%s'\n", pamapdbfType[field_type].strvalue);
@@ -764,6 +768,7 @@ int reboot_restore(char *filename, initHookState init_state)
     char buffer[BUF_SIZE], *bp;
     char ebuffer[EBUF_SIZE]; /* make room for macro expansion */
     char value_string[BUF_SIZE];
+    char *long_string_value;
     char datetime[32];
     char c;
     FILE *inp_fd;
@@ -772,6 +777,8 @@ int reboot_restore(char *filename, initHookState init_state)
     DBENTRY *pdbentry = &dbentry;
     long status;
     int n, write_backup, num_errors, is_scalar;
+    int long_string_error;
+    size_t long_string_length;
     long *pStatusVal = 0;
     char *statusStr = 0;
     char realName[64]; /* name without trailing '$' */
@@ -861,6 +868,7 @@ int reboot_restore(char *filename, initHookState init_state)
 
     /* restore from data file */
     num_errors = 0;
+    long_string_value = NULL;
     while ((bp = fgets(buffer, BUF_SIZE, inp_fd))) {
         if (handle && pairs) {
             ebuffer[0] = '\0';
@@ -938,29 +946,49 @@ int reboot_restore(char *filename, initHookState init_state)
             if (realName[strlen(realName) - 1] == '$') {
                 realName[strlen(realName) - 1] = '\0';
                 is_long_string = 1;
-                /* See if we got the whole line */
-                if (bp[strlen(bp) - 1] != '\n') {
-                    /* No, we didn't.  One more read will certainly accumulate a value string of length BUF_SIZE */
-                    if (save_restoreDebug > 9) printf("%s: did not reach end of line for long-string PV\n", __func__);
-                    bp = fgets(buffer, BUF_SIZE, inp_fd);
+                long_string_length = 0;
+                long_string_value = (char *)malloc(LONG_STRING_FILE_BUFF_SIZE);
+                long_string_error = (long_string_value == NULL);
+                if (long_string_error) {
+                    ERRLOG("Can't allocate long-string restore buffer\n");
+                } else {
+                    long_string_length = strlen(value_string);
+                    memcpy(long_string_value, value_string, long_string_length + 1);
+                }
+                while (strchr(bp, '\n') == NULL && strchr(bp, '\r') == NULL) {
+                    const char *chunk;
+                    size_t chunk_length;
+                    if (fgets(buffer, BUF_SIZE, inp_fd) == NULL) {
+                        if (ferror(inp_fd)) {
+                            ERRLOG("Error reading from file\n");
+                            long_string_error = 1;
+                        }
+                        break;
+                    }
+                    bp = buffer;
                     if (handle && pairs) {
                         ebuffer[0] = '\0';
                         macExpandString(handle, buffer, ebuffer, EBUF_SIZE);
                         bp = ebuffer;
-                        if (save_restoreDebug >= 1) {
-                            printf("%s: buffer='%s'\n", __func__ , buffer);
-                            printf("                         ebuffer='%s'\n", ebuffer);
-                        }
                     }
-                    n = BUF_SIZE - (int)strlen(value_string) - 1;
-                    strncat(value_string, bp, n);
-                    /* make sure value_string is properly null-terminated */
-                    value_string[BUF_SIZE - 1] = '\0';
-                    /* we don't want that '\n' in the string */
-                    if (value_string[strlen(value_string) - 1] == '\n') value_string[strlen(value_string) - 1] = '\0';
+                    chunk = bp;
+                    chunk_length = strcspn(chunk, "\r\n");
+                    if (chunk_length >= LONG_STRING_FILE_BUFF_SIZE - long_string_length) {
+                        long_string_error = 1;
+                    } else if (!long_string_error) {
+                        memcpy(long_string_value + long_string_length, chunk, chunk_length);
+                        long_string_length += chunk_length;
+                        long_string_value[long_string_length] = '\0';
+                    }
                 }
-                /* We aren't prepared to handle more than BUF_SIZE characters.  Discard additional characters until end of line */
-                while (bp[strlen(bp) - 1] != '\n') bp = fgets(buffer, BUF_SIZE, inp_fd);
+                if (long_string_error) {
+                    num_errors++;
+                    free(long_string_value);
+                    long_string_value = NULL;
+                    if (ferror(inp_fd)) break;
+                    ERRLOG("Long string for '%s' exceeds the supported size\n", PVname);
+                    continue;
+                }
             }
 
             found_field = 1;
@@ -975,7 +1003,8 @@ int reboot_restore(char *filename, initHookState init_state)
             }
             if (found_field) {
                 if (is_scalar || is_long_string) {
-                    status = scalar_restore(pass, pdbentry, PVname, value_string, is_long_string);
+                    status = scalar_restore(pass, pdbentry, PVname,
+                                            is_long_string ? long_string_value : value_string, is_long_string);
                 } else {
                     status = SR_array_restore(pass, inp_fd, PVname, value_string, 0);
                 }
@@ -1014,6 +1043,10 @@ int reboot_restore(char *filename, initHookState init_state)
             /* end of file */
             break;
         }
+    }
+    if (is_long_string) {
+        free(long_string_value);
+        long_string_value = NULL;
     }
     fclose(inp_fd);
     if (handle) macDeleteHandle(handle);
