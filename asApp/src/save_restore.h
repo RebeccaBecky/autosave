@@ -46,8 +46,9 @@
 
 #define BUF_SIZE 200
 #define EBUF_SIZE (BUF_SIZE * 2)
-#define LONG_STRING_BUFF_SIZE (32767 + 1) /* Maximum value length plus NUL. */
-/* Hex-escaped bytes can expand to four characters in the save file. */
+#define LONG_STRING_BUFF_SIZE (32767 + 1) /* Maximum EPICS lsi/lso value length plus terminating NUL. */
+/* Hex-escaped bytes can expand to up to four characters in the save file,
+therefore need 4 times the buffer size for worst case */
 #define LONG_STRING_FILE_BUFF_SIZE (LONG_STRING_BUFF_SIZE * 4)
 #define ARRAY_BEGIN '{'
 #define ARRAY_END '}'
